@@ -1,0 +1,559 @@
+---
+title: "Thesis"
+output: html_document
+---
+------------------------------------------------------------
+```{r}
+require(rtdists)
+require(dplyr)   # for data manipulations and looping
+require(tidyr)   # for data manipulations
+require(purrr)   # for data manipulations
+require(lattice) # for plotting and corresponding themes
+require(latticeExtra)
+lattice.options(default.theme = standard.theme(color = FALSE))
+lattice.options(default.args = list(as.table = TRUE))
+options(digits = 3) # only three decimal digits
+require(binom)  # for binomial confidence intervals
+
+## Preprocessing
+data <- read.csv("input/data.csv", stringsAsFactors = FALSE, sep = ";")
+
+data <- data %>% mutate(cue_target = ifelse(CUEFILE == '010.bmp','new',
+                                         ifelse(CUEFILE == '050.bmp', 'passive',
+                                                ifelse(CUEFILE == '090.bmp', 'old', NA))))
+
+data <- data %>% mutate(rt = ALL_RT / 1000)
+
+data <- data %>% mutate(accuracy = ifelse(LAB_RESP=='MISS'|LAB_RESP=='FA',1,
+                                          ifelse(LAB_RESP=='HIT'|LAB_RESP=='CR',2,NA)))
+
+data <- data %>% mutate(response = ifelse(LAB_RESP=='MISS'|LAB_RESP=='CR','new',
+                                          ifelse(LAB_RESP=='HIT'|LAB_RESP=='FA','old',NA)))
+
+data <- data %>% mutate(response_num = ifelse(response=='old',2,
+                                              ifelse(response=='new',1,NA)))
+
+data <- data[!(data$MEMORY=='CUO'),]
+
+data <- data %>% mutate(target = ifelse(MEMORY=='NEW','new target',
+                                        ifelse(MEMORY=='OLD','old target',NA)))
+            
+data <- data %>% mutate(cue_num = ifelse(cue_target=='new',1,
+                                                 ifelse(cue_target=='passive',2,
+                                                        ifelse(cue_target=='old',3,NA))))
+data <- data %>% mutate(target_num = ifelse(target=='new target',2,
+                                            ifelse(target=='old target',1,NA)))
+
+data <- data[complete.cases(data$cue_target), ]
+data <- data[complete.cases(data$rt), ]
+data <- data[complete.cases(data$accuracy), ]
+data <- data[complete.cases(data$response), ]
+data <- data[complete.cases(data$SUBJECT), ]
+
+data$cue_target <- factor(data$cue_target, levels = c("new", "passive", "old"))
+data$cue_num <- factor(data$cue_num, levels = c(1,2,3))
+data$MEMORY <- as.factor(data$MEMORY)
+data$target <- factor(data$target, levels = c("old target","new target"))
+data$target_num <- factor(data$target_num, levels = c(1,2))
+
+names(data) <- tolower(names(data))
+```
+
+```{r}
+#condition = new
+data2 <- data[data$cue_target == 'new',]
+sv_new <- 0.3
+t0_new <- 9/10 * min(data2$rt)
+b_new <- 2 * IQR(data2$rt)
+#condition = passive
+data3 <- data[data$cue_target == 'passive',]
+sv_passive <- 0.3
+t0_passive <- 9/10 * min(data3$rt)
+b_passive <- 2 * IQR(data3$rt)
+#condition = old
+data4 <- data[data$cue_target == 'old',]
+sv_old <- 0.3
+t0_old <- 9/10 * min(data4$rt)
+b_old <- 2 * IQR(data4$rt)
+#averaged over all three conditions
+sv_avg <- 0.3
+t0_avg <- (t0_new+t0_passive+t0_old) / 3
+b_avg <- as.numeric((b_new+b_passive+b_old) / 3)
+```
+
+```{r}
+# aggregate data for first plot:
+agg_data <- data  %>% group_by(subject, cue_target, target_num) %>% 
+  summarise(prop = mean(response == "old"), mean_rt = mean(rt), median_rt = mean(rt)) %>% 
+  ungroup()
+
+xyplot(prop ~ target_num|subject, agg_data, group = cue_target, type = "b", 
+       auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses")
+```
+
+```{r}
+agg_data_new <- data  %>% group_by(subject, cue_target, target_num) %>% 
+  summarise(prop = mean(response == "new"), mean_rt = mean(rt), median_rt = mean(rt)) %>% 
+  ungroup()
+
+xyplot(prop ~ target_num|subject, agg_data_new, group = cue_target, type = "b", 
+       auto.key = list(lines = TRUE), ylab = "Proportion of 'new' responses")
+```
+
+```{r}
+quantiles <- c(0.1, 0.3, 0.5, 0.7, 0.9)
+## aggregate data for quantile plot
+quantiles_data <- data  %>% 
+  group_by(subject, cue_target, target_num) %>% 
+  nest() %>% 
+  mutate(quantiles = map(data, ~ as.data.frame(t(quantile(.x$rt, probs = quantiles))))) %>% 
+  unnest(quantiles) %>% 
+  gather("quantile", "rt",`10%`:`90%`) %>% 
+  arrange(subject, cue_target, target_num)
+
+xyplot(rt ~ target_num|subject + cue_target, quantiles_data, group = quantile, type = "b", 
+       auto.key = list(lines = TRUE), ylab = "RT (in seconds)", subset = cue_target == "old")
+```
+
+```{r}
+# aggregate data for response probability plot:
+agg_data_bin <- data %>% 
+  group_by(subject, cue_target, target_num) %>%
+  summarise(n = n(), 
+            old = sum(response == "old"),
+            new = sum(response == "new")) %>%
+  ungroup() %>%
+  mutate(prop = map2(old, n, ~ binom.confint(.x, .y, methods = "agresti-coull"))) %>% 
+  unnest(prop)
+  
+
+knitr::kable(
+  data %>% group_by(subject, cue_target, target_num, response) %>%
+    summarise(n = n()) %>%
+    spread(target_num, n)
+)
+```
+
+```{r}
+xyplot(mean ~ target_num|subject, agg_data_bin, group = cue_target, type = "b", 
+       auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses")
+```
+
+```{r}
+## aggregate data for quantile plot
+quantiles_data_bin <- data  %>% 
+  group_by(subject, cue_target, target_num) %>% 
+  nest() %>% 
+  mutate(quantiles = map(data, ~ as.data.frame(t(quantile(.x$rt, probs = quantiles))))) %>% 
+  unnest(quantiles) %>% 
+  gather("quantile", "rt",`10%`:`90%`) %>% 
+  arrange(subject, cue_target, target_num)
+
+xyplot(rt ~ target_num|subject + cue_target, quantiles_data_bin, group = quantile, type = "b", 
+       auto.key = list(lines = TRUE), ylab = "RT (in seconds)", subset = cue_target == "new")
+```
+
+```{r}
+agg2_data_response <- data  %>% 
+  group_by(subject, cue_target, target_num, response) %>% 
+  nest() %>% 
+  mutate(quantiles = map(data, ~ as.data.frame(t(quantile(.x$rt, probs = quantiles))))) %>% 
+  unnest(quantiles) %>% 
+  gather("quantile", "rt",`10%`:`90%`) %>% 
+  arrange(subject, cue_target, response, target_num)
+
+p1 <- xyplot(rt ~ target_num|subject, agg2_data_response, group = quantile, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "RT (in seconds)", 
+             subset = cue_target == "old" & response == "old", layout = c(15,3))
+p2 <- xyplot(rt ~ target_num|subject, agg2_data_response, group = quantile, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "RT (in seconds)", 
+             subset = cue_target == "old" & response == "new", col = "grey")
+p1 + as.layer(p2)
+```
+
+```{r}
+p1 <- xyplot(rt ~ target_num|subject, agg2_data_response, group = quantile, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "RT (in seconds)", 
+             subset = cue_target == "new" & response == "old", layout = c(15,3))
+p2 <- xyplot(rt ~ target_num|subject, agg2_data_response, group = quantile, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "RT (in seconds)", 
+             subset = cue_target == "new" & response == "new", col = "grey")
+p1 + as.layer(p2)
+```
+
+```{r}
+d_nested <- data %>% 
+  group_by(subject, cue_target) %>%
+  nest()
+d_nested
+```
+
+```{r}
+## create constrained values
+##condition = new
+data2 <- data[data$cue_target == 'new',]
+sv_new <- 0.3
+t0_new <- 9/10 * min(data2$rt)
+# a = maximum of uniform start point distribution
+a_new <- 2 * IQR(data2$rt)
+# b = response threshold
+b_new <- 1.25 * a_new
+c_new_v_old <- 0.5 + qnorm(length(data2$response[data2$response=="old"])/length(data2$response), mean = 0, sd = 0.3*sqrt(2))
+c_new_v_new <- 0.5 + qnorm(length(data2$response[data2$response=="new"])/length(data2$response), mean = 0, sd = 0.3*sqrt(2))
+
+##condition = passive
+data3 <- data[data$cue_target == 'passive',]
+sv_passive <- 0.3
+t0_passive <- 9/10 * min(data3$rt)
+a_passive <- 2 * IQR(data3$rt)
+b_passive <- 1.25 * a_passive
+c_pas_v_old <- 0.5 + qnorm(length(data3$response[data3$response=="old"])/length(data3$response), mean = 0, sd = 0.3*sqrt(2))
+c_pas_v_new <- 0.5 + qnorm(length(data3$response[data3$response=="new"])/length(data3$response), mean = 0, sd = 0.3*sqrt(2))
+
+##condition = old
+data4 <- data[data$cue_target == 'old',]
+sv_old <- 0.3
+t0_old <- 9/10 * min(data4$rt)
+a_old <- 2 * IQR(data4$rt)
+b_old <- 1.25 * a_old
+c_old_v_old <- 0.5 + qnorm(length(data4$response[data4$response=="old"])/length(data4$response), mean = 0, sd = 0.3*sqrt(2))
+c_old_v_new <- 0.5 + qnorm(length(data4$response[data4$response=="new"])/length(data4$response), mean = 0, sd = 0.3*sqrt(2))
+
+##averaged over all three conditions
+sv_avg <- 0.3
+t0_avg <- (t0_new+t0_passive+t0_old) / 3
+a_avg <- (a_new+a_passive+a_old) / 3
+b_avg <- (b_new+b_passive+b_old) / 3
+v_old_avg <- (c_new_v_old+c_pas_v_old+c_old_v_old) / 3
+v_new_avg <- (c_new_v_new+c_pas_v_new+c_old_v_new) / 3
+v_avg <- (v_old_avg+v_new_avg)/2
+```
+
+```{r}
+# objective function for lba.
+objective_lba_separate <- function(pars, rt, response, drift, ...) {
+  non_v_pars <- grep("^v", names(pars), invert = TRUE, value = TRUE)
+  base_par <- length(non_v_pars)  # number of non-drift parameters
+  densities <- vector("numeric", length(rt))
+  for (i in seq_along(levels(drift))) {
+    if (sum(drift == levels(drift)[i]) == 0) next
+    densities[drift == levels(drift)[i]] <- dLBA(
+      rt[drift == levels(drift)[i]], 
+      response=response[drift == levels(drift)[i]],
+      A = pars["A"],
+      b = list(pars["b_1"]+pars["A"],pars["b_2"]+pars["A"]), 
+      t0 = if ("t0" %in% non_v_pars) pars["t0"] else t0_avg, 
+      mean_v = c(pars[i], 1-pars[i]), 
+      sd_v = if ("sv" %in% non_v_pars) pars["sv"] else sv_avg, silent=TRUE)
+  }
+  if (any(densities == 0)) return(1e6)
+  return(-sum(log(densities)))
+}
+```
+
+```{r}
+# function that creates random start values
+get_start_lba <- function(base_par, n_drift = 2) {
+  start1 <- c(
+    A = runif(1, 0, 0.5),
+    t0 = runif(1, 0, 0.5), 
+    b = runif(1, 0.5, 3),
+    b_1 = runif(1, 0.5, 3), 
+    b_2 = runif(1, 0.5, 3),
+    sv = runif(1, 0.5, 1.5),
+    st0 = runif(1, 0, 0.5)
+  )
+  start2 <- sort(rnorm(n_drift), decreasing = FALSE)
+  names(start2) <- paste0("v_", seq_len(n_drift))
+  c(start2, start1[base_par])
+}
+```
+
+```{r}
+# function that tries different random start values until it works:
+ensure_fit <- 
+  function(data, start_function, objective_function, 
+           base_pars, n_drift = 2, n_fits = 1, 
+           lower = c(rep(0, length(base_pars)), -Inf,
+                     rep(-Inf,length(start_function(base_pars))-length(base_pars)))) {
+    best_fit <- list(objective = 1e+06)
+  for (i in seq_len(n_fits)) {
+    start_ll <- 1e+06
+    #browser()
+    while(start_ll == 1e+06) {
+      start <- start_function(base_pars, n_drift=n_drift)
+      start_ll <- objective_function(start, 
+                                     rt = data$rt, response = data$response_num, 
+                                     drift = factor(data$target_num, seq_len(n_drift)), 
+                                     instruction = data$cue_target)
+    }
+    cat("\nstart fitting.\n") # just for information to see if it is stuck
+    
+    fit <- nlminb(start, objective_function, 
+                  rt = data$rt, response = data$response_num, 
+                  drift = factor(data$target_num, seq_len(n_drift)), 
+                  instruction = data$cue_target,
+                  lower = 0)
+    
+    if (fit$objective < best_fit$objective) best_fit <- fit
+  }
+  out <- as.data.frame(t(unlist(best_fit[1:3])))
+  colnames(out) <- sub("par.", "", colnames(out))
+  out
+}
+```
+
+```{r}
+# fit lba model
+fit_lba <- d_nested %>% 
+  mutate(fit = 
+           map(data, 
+               ~ensure_fit(data = ., start_function = get_start_lba, 
+                      objective_function = objective_lba_separate, 
+                      base_pars = c("A","t0","b_1","b_2","sv"),
+                      lower = 0,
+                      n_drift = 2, n_fits = 1))) %>% 
+  unnest(fit)
+```
+
+```{r}
+fit_lba$data <- NULL
+#if (!("A" %in% colnames(fit_lba))) fit_lba$A <- a_avg
+#if (!("b" %in% colnames(fit_lba))) fit_lba$b <- b_avg
+#if (!("sv" %in% colnames(fit_lba))) fit_lba$sv <- sv_avg
+#if (!("t0" %in% colnames(fit_lba))) fit_lba$t0 <- t0_avg
+## formula used: 2(log-likelihood) + 2K
+fit_lba$AIC <- (2*fit_lba$objective) + 14
+AIC <- sum(fit_lba$AIC)
+```
+
+```{r}
+# get predicted response proportions
+target_num <- c(1,2,3)
+lba_pars_separate_l <- fit_lba %>% gather("target_num", "v", starts_with("v"))
+lba_pars_separate_l$target_num <- factor(substr(lba_pars_separate_l$target_num, 3,3), 
+                                       levels = as.character(seq_len(length(target_num)-1)))
+#pars_separate_l <- inner_join(pars_separate_l, agg_rr98_bin)
+lba_pars_separate_l <- lba_pars_separate_l  %>% group_by(subject, cue_target, target_num) %>%
+  mutate(resp_prop = pLBA(rt=Inf, response=2, A=A, sd_v=sv,
+                          mean_v=c(v, 1-v), t0=t0, b=list(b_1+A,b_2+A), silent=TRUE))
+
+#plot for old cues only
+p1 <- xyplot(mean ~ target_num|subject + cue_target, agg_data_bin, type = "b", auto.key = 
+               list(lines = TRUE), ylab = "Proportion of 'old' responses", xlab = "presented target word",col = "grey",
+             subset = cue_target == "old",
+             scales = list(x = list(labels = c('o','n'))))
+p2 <- segplot(target_num ~ upper+lower|subject + cue_target, agg_data_bin, 
+              auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses",xlab='presented target word',
+              col = "grey", horizontal = FALSE, segments.fun = panel.arrows,  
+              draw.bands = FALSE, angle = 90, length = 0.05, ends = "both",
+              scales = list(x = list(labels = c('o','n'))),
+              subset = cue_target == "old")
+p3 <- xyplot(resp_prop ~ target_num|subject + cue_target, lba_pars_separate_l, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses", 
+             col = "black",
+             subset = cue_target == "old")
+p1 + as.layer(p2) + as.layer(p3)
+```
+
+```{r}
+# get predicted quantiles (uses predicted response proportions)
+lba_separate_pred_old <- lba_pars_separate_l %>% do(as.data.frame(t(
+  qLBA(quantiles*.$resp_prop, response=2, A=.$A, sd_v=.$sv,
+       mean_v=c(.$v, 1-.$v), t0=.$t0, b=list(.$b_1+.$A,.$b_2+.$A), silent=TRUE)))) %>% 
+  ungroup() %>% gather("quantiles", "old", V1:V5)
+lba_separate_pred_new <- lba_pars_separate_l %>% do(as.data.frame(t(
+  qLBA(quantiles*(1-.$resp_prop), response=1, A=.$A, sd_v=.$sv,
+       mean_v=c(.$v, 1-.$v), t0=.$t0, b=list(.$b_1+.$A,.$b_2+.$A), silent=TRUE)))) %>% 
+  ungroup() %>% gather("quantiles", "new", V1:V5)
+
+#separate_pred_light %>% filter(is.na(light))
+lba_separate_pred <- inner_join(lba_separate_pred_old, lba_separate_pred_new)
+lba_separate_pred$quantiles <- factor(lba_separate_pred$quantiles, 
+                                  levels = c("V5", "V4", "V3", "V2", "V1"), 
+                                  labels = c("90%", "70%", "50%", "30%", "10%"))
+lba_separate_pred <- lba_separate_pred %>% gather("response", "rt", old, new)
+
+# get SE for observed quantiles
+agg2_data_response_se <- data  %>% group_by(subject, cue_target, target_num, response) %>% 
+  summarise(se_median = sqrt(pi/2)*(sd(rt)/sqrt(n()))) %>%
+  ungroup()
+
+# calculate error bars for quantiles.
+agg2_data_response <- left_join(agg2_data_response, agg2_data_response_se)
+agg2_data_response <- agg2_data_response %>%
+  mutate(lower = rt-se_median, upper = rt+se_median)
+
+p1 <- xyplot(rt ~ target_num|subject+response, agg2_data_response, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "RT (in seconds)", 
+             subset = cue_target == "old" & quantile == "50%", 
+             layout = c(15,3), col = "grey")
+p1e <- segplot(target_num ~ upper+lower|subject+response, agg2_data_response, 
+               auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses", 
+               col = "grey", horizontal = FALSE, segments.fun = panel.arrows,  
+               draw.bands = FALSE, angle = 90, length = 0.05, ends = "both", 
+               subset = cue_target == "old" & quantile == "50%", layout = c(15,3))
+p2 <- xyplot(rt ~ target_num|subject + response, lba_separate_pred, type = "b", 
+             auto.key = list(lines = TRUE), ylab = "RT (in seconds)", 
+             subset = cue_target == "old" & quantiles == "50%", 
+             scales = list(y = list(limits = c(0.5, 1.5))))
+p2 + as.layer(p1) + as.layer(p1e)
+```
+
+```{r}
+# Turn model comparison plots into one plot averaged for all participants instead of a plot for each participant.
+agg3_data <- agg2_data_response[agg2_data_response$quantile == "50%",] %>% group_by(cue_target, target_num, response) %>%
+  summarise(mean_lower = mean(lower), mean_upper = mean(upper), mean_rt = mean(rt), mean_se_median = mean(se_median)) %>%
+  ungroup()
+agg3_data_pred <- lba_separate_pred[lba_separate_pred$quantiles == "50%",] %>% group_by(cue_target, target_num, response) %>%
+  summarise(mean_rt = mean(rt, na.rm = TRUE)) %>%
+  ungroup()
+
+agg3_data$response <- sub("^","response: ",agg3_data$response)
+agg3_data$cue_target <- sub("^","cue: ",agg3_data$cue_target)
+agg3_data_pred$response <- sub("^","response: ",agg3_data_pred$response)
+agg3_data_pred$cue_target <- sub("^","cue: ",agg3_data_pred$cue_target)
+
+key <- simpleKey(text = c("data", "LBA"), lines = TRUE)
+key$lines$col <- c("grey", "black")
+key$lines$lty <- c(1,1)
+key$points$col <- c("grey", "black")
+key$points$pch <- c(1,0)
+
+p1 <- xyplot(mean_rt ~ target_num|response+cue_target, agg3_data, type = "b",
+             auto.key = list(lines = TRUE), xlab = "presented target word", ylab = "RT (in seconds)",
+             scales = list(x = list(labels = c("old","new"))),
+             layout = c(3,2), col = "grey")
+p1e <- segplot(target_num ~ mean_upper+mean_lower|response+cue_target, agg3_data,
+               auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses",
+               col = "grey", horizontal = FALSE, segments.fun = panel.arrows, draw.bands = FALSE, angle = 90, length = 0.05, ends = "both", 
+               layout = c(3,2))
+p2 <- xyplot(mean_rt ~ target_num|response+cue_target, agg3_data_pred, type = "b",
+             auto.key = list(lines = TRUE), xlab = "presented target word", ylab = "RT (in seconds)",
+             scales = list(y = list(limits = c(0.7, 1.2)),x = list(labels = c("old","new"))),
+             col = "black", lty = 1, key = key, pch = 0)
+p2 + as.layer(p1) + as.layer(p1e)
+```
+
+```{r}
+# Turn model comparison plots into one plot averaged for all participants instead of a plot for each participant, for all quantiles
+agg4_data <- agg2_data_response %>% group_by(cue_target, target_num, response, quantile) %>%
+  summarise(mean_lower = mean(lower), mean_upper = mean(upper), mean_rt = mean(rt), mean_se_median = mean(se_median)) %>%
+  ungroup()
+agg4_data_pred <- lba_separate_pred %>% group_by(cue_target, target_num, response, quantiles) %>%
+  summarise(mean_rt = mean(rt, na.rm = TRUE)) %>%
+  ungroup()
+
+agg4_data$response <- sub("^","response: ",agg4_data$response)
+agg4_data$cue_target <- sub("^","cue: ",agg4_data$cue_target)
+agg4_data_pred$response <- sub("^","response: ",agg4_data_pred$response)
+agg4_data_pred$cue_target <- sub("^","cue: ",agg4_data_pred$cue_target)
+
+key <- simpleKey(text = c("data", "LBA"), lines = TRUE)
+key$lines$col <- c("grey", "black")
+key$lines$lty <- c(1,1)
+key$points$col <- c("grey", "black")
+key$points$pch <- c(1,0)
+
+p1 <- xyplot(mean_rt ~ target_num|response+cue_target, agg4_data, type = "b",
+             auto.key = list(lines = TRUE), xlab = "presented target word", ylab = "RT (in seconds)",
+             scales = list(x = list(labels = c("old","new"))),
+             layout = c(3,2), col = "grey", group = quantile)
+p1e <- segplot(target_num ~ mean_upper+mean_lower|response+cue_target, agg4_data,
+               auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses",
+               col = "grey", horizontal = FALSE, segments.fun = panel.arrows, draw.bands = FALSE, angle = 90, length = 0.05, ends = "both", 
+               layout = c(3,2), group = quantile)
+p2 <- xyplot(mean_rt ~ target_num|response+cue_target, agg4_data_pred, type = "b",
+             auto.key = list(lines = TRUE), xlab = "presented target word", ylab = "RT (in seconds)",
+             scales = list(x = list(labels = c("old","new"))),
+             col = "black", lty = 1, key = key, pch = 0, group = quantiles)
+p2 + as.layer(p1) + as.layer(p1e)
+```
+
+```{r}
+## Visualize actual and predicted choice proportions for each condition, for old response
+agg5_data <- agg_data_bin %>% group_by(cue_target, target_num) %>%
+  summarise(mean_lower = mean(lower), mean_upper = mean(upper), mean = mean(mean)) %>%
+  ungroup()
+agg5_data_pred <- lba_pars_separate_l %>% group_by(cue_target, target_num) %>%
+  summarise(mean_prop = mean(resp_prop)) %>%
+  ungroup()
+
+agg5_data$cue_target <- sub("^","cue: ",agg5_data$cue_target)
+agg5_data_pred$cue_target <- sub("^","cue: ",agg5_data_pred$cue_target)
+
+key <- simpleKey(text = c("data", "LBA"), lines = TRUE)
+key$lines$col <- c("grey", "black")
+key$lines$lty <- c(1,1)
+key$points$col <- c("grey", "black")
+key$points$pch <- c(1,0)
+  
+p1 <- xyplot(mean ~ target_num|cue_target, agg5_data, type = "b", auto.key = 
+               list(lines = TRUE), ylab = "Proportion of 'old' responses", col = "grey",
+             xlab = "presented target word", scales = list(x = list(labels = c("old", "new"))),layout = c(1,3),key=key)
+p2 <- segplot(target_num ~ mean_upper + mean_lower|cue_target, agg5_data, auto.key =
+                list(lines = TRUE), ylab = "Proportion of 'old' responses", col = "grey", horizontal = FALSE, 
+              segments.fun = panel.arrows, draw.bands = FALSE, angle = 90, length = 0.05, ends = "both")
+p3 <- xyplot(mean_prop ~ target_num|cue_target, agg5_data_pred, type = "b",
+             auto.key = list(lines = TRUE), ylab = "Proportion of 'old' responses", col = "black")
+p1 + as.layer(p2) + as.layer(p3)
+```
+
+```{r}
+## Visualize actual and predicted choice proportions for each condition, for new response
+agg_data_bin_new <- data %>% 
+  group_by(subject, cue_target, target_num) %>%
+  summarise(n = n(), 
+            old = sum(response == "old"),
+            new = sum(response == "new")) %>%
+  ungroup() %>%
+  mutate(prop = map2(new, n, ~ binom.confint(.x, .y, methods = "agresti-coull"))) %>% 
+  unnest(prop)
+
+target_num <- c(1,2,3)
+lba_pars_separate_l2 <- fit_lba %>% gather("target_num", "v", starts_with("v"))
+lba_pars_separate_l2$target_num <- factor(substr(lba_pars_separate_l2$target_num, 3,3), 
+                                       levels = as.character(seq_len(length(target_num)-1)))
+#pars_separate_l <- inner_join(pars_separate_l, agg_rr98_bin)
+lba_pars_separate_l2 <- lba_pars_separate_l2  %>% group_by(subject, cue_target, target_num) %>%
+  mutate(resp_prop = pLBA(rt=Inf, response=1, A=A, sd_v=sv,
+                          mean_v=c(v, 1-v), t0=t0, b=list(b_1+A,b_2+A), silent=TRUE))
+
+agg6_data <- agg_data_bin_new %>% group_by(cue_target, target_num) %>%
+  summarise(mean_lower = mean(lower), mean_upper = mean(upper), mean = mean(mean)) %>%
+  ungroup()
+agg6_data_pred <- lba_pars_separate_l2 %>% group_by(cue_target, target_num) %>%
+  summarise(mean_prop = mean(resp_prop)) %>%
+  ungroup()
+
+agg6_data$cue_target <- sub("^","cue: ",agg6_data$cue_target)
+agg6_data_pred$cue_target <- sub("^","cue: ",agg6_data_pred$cue_target)
+
+key <- simpleKey(text = c("data", "LBA"), lines = TRUE)
+key$lines$col <- c("grey", "black")
+key$lines$lty <- c(1,1)
+key$points$col <- c("grey", "black")
+key$points$pch <- c(1,0)
+  
+p1 <- xyplot(mean ~ target_num|cue_target, agg6_data, type = "b", auto.key = 
+               list(lines = TRUE), ylab = "Proportion of 'new' responses", col = "grey",
+             xlab = "presented target word", scales = list(x = list(labels = c("old", "new"))),layout = c(1,3),key=key)
+p2 <- segplot(target_num ~ mean_upper + mean_lower|cue_target, agg6_data, auto.key =
+                list(lines = TRUE), ylab = "Proportion of 'new' responses", col = "grey", horizontal = FALSE, 
+              segments.fun = panel.arrows, draw.bands = FALSE, angle = 90, length = 0.05, ends = "both")
+p3 <- xyplot(mean_prop ~ target_num|cue_target, agg6_data_pred, type = "b",
+             auto.key = list(lines = TRUE), ylab = "Proportion of 'new' responses", col = "black")
+p1 + as.layer(p2) + as.layer(p3)
+```
+
+```{r}
+## Visualize average parameter values.
+agg_lba_pars <- fit_lba %>% group_by(cue_target) %>%
+  summarise(v_1 = mean(v_1), v_2 = mean(v_2), b_1 = mean(b_1), b_2 = mean(b_2), t0 = mean(t0), A = mean(A), sv = mean(sv), objective = mean(objective), AIC = mean(AIC)) %>%
+  ungroup()
+
+p1 <- xyplot(v_1 + v_2 + b_1 + b_2 + t0 + A + sv ~ factor(cue_target), agg_lba_pars, type = "b",
+             auto.key = list(lines = TRUE), ylab = "average parameter values", xlab = "presented cue")
+p1
+```
+
